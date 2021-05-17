@@ -22,11 +22,10 @@ name = "cifar_ten"
 
 [features]
 default = []
-display = ["show-image", "image"]
+display = ["show-image", "image", "ndarray"]
 download = ["reqwest", "flate2", "tar"]
 
 [dependencies]
-ndarray = "0.14"
 rand = "0.8"
 
 # Used for downloading dataset
@@ -38,3 +37,6 @@ tar = {version = "0.4", optional = true}
 # Used to show datasets
 image = {version = "0.23", optional = true}
 show-image = {version = "0.6", features = ["image"], optional = true}
+
+# Optional use of ndarray conversion
+ndarray = {version = "0.15", optional = true}

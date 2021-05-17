@@ -24,6 +24,7 @@
 //!
 
 mod test;
+mod utils;
 
 use ndarray::prelude::*;
 use std::error::Error;
@@ -55,17 +56,9 @@ pub struct Cifar10<'a> {
     testing_bin_paths: Vec<&'a str>,
     num_records_train: usize,
     num_records_test: usize,
-    as_f32: bool,
+    to_ndarray: bool,
     normalize: bool,
     download_and_extract: bool,
-}
-
-pub struct DataUint8(Array4<u8>, Array2<u8>, Array4<u8>, Array2<u8>);
-pub struct DataFloat32(Array4<f32>, Array2<f32>, Array4<f32>, Array2<f32>);
-
-pub enum Either<DataUint8, DataFloat32> {
-    Left(DataUint8),
-    Right(DataFloat32),
 }
 
 impl<'a> Cifar10<'a> {
@@ -86,7 +79,7 @@ impl<'a> Cifar10<'a> {
             testing_bin_paths: vec!["test_batch.bin"],
             num_records_train: 50_000,
             num_records_test: 10_000,
-            as_f32: false,
+            to_ndarray: false,
             normalize: false,
             download_and_extract: false,
         }
@@ -105,6 +98,7 @@ impl<'a> Cifar10<'a> {
     }
 
     /// Download CIFAR-10 dataset and extract from compressed tarball
+    #[cfg(feature = "download")]
     pub fn download_and_extract(mut self, download_and_extract: bool) -> Self {
         self.download_and_extract = download_and_extract;
         self
@@ -146,9 +140,16 @@ impl<'a> Cifar10<'a> {
         self
     }
 
-    // Return a matrix with f32 elements normalized across range [0..1]
+    /// Return a matrix with f32 elements normalized across range [0..1]
     pub fn normalize(mut self, normalize: bool) -> Self {
         self.normalize = normalize;
+        self
+    }
+
+    /// Return a matrix with f32 elements normalized across range [0..1]
+    #[cfg(feature = "ndarray")]
+    pub fn to_ndarray(mut self, to_ndarray: bool) -> Self {
+        self.to_ndarray = to_ndarray;
         self
     }
 
@@ -215,7 +216,7 @@ impl<'a> Cifar10<'a> {
     /// Returns the array tuple using the specified options in Array4/2<u8> form
     pub fn build_u8(
         self,
-    ) -> Result<(Array4<u8>, Array2<u8>, Array4<u8>, Array2<u8>), Box<dyn Error>> {
+    ) -> Result<(Vec<u8>, Vec<u8>, Vec<u8>, Vec<u8>), Box<dyn Error>> {
         if self.normalize {
             println!(
                 "Warning: the \"normalize\" option has been selected without as_f32 being true; returning standard <u8> matrices");
@@ -240,7 +241,7 @@ impl<'a> Cifar10<'a> {
     /// Returns the array tuple using the specified options in Array2<f32> form
     pub fn build_f32(
         self,
-    ) -> Result<(Array4<f32>, Array2<f32>, Array4<f32>, Array2<f32>), Box<dyn Error>> {
+    ) -> Result<(Vec<f32>, Vec<f32>, Vec<f32>, Vec<f32>), Box<dyn Error>> {
         #[cfg(feature = "download")]
         match self.download_and_extract {
             false => (),
@@ -254,21 +255,22 @@ impl<'a> Cifar10<'a> {
         let (train_data, train_labels) = get_data(&self, "train")?;
         let (test_data, test_labels) = get_data(&self, "test")?;
 
-        let mut train_data = train_data.mapv(|x| x as f32);
-        let train_labels = train_labels.mapv(|x| x as f32);
-        let mut test_data = test_data.mapv(|x| x as f32);
-        let test_labels = test_labels.mapv(|x| x as f32);
-
-        if self.normalize {
-            train_data = train_data.mapv(|x| x / 256.0);
-            test_data = test_data.mapv(|x| x / 256.0);
-        }
+        let mut train_data: Vec<f32> = match self.normalize {
+            true => train_data.iter().map(|x| *x as f32 / 256.0 ).collect(),
+            false => train_data.iter().map(|x| *x as f32).collect()
+        };
+        let train_labels = train_labels.iter().map(|x| *x as f32).collect();
+        let mut test_data: Vec<f32> = match self.normalize {
+            true => test_data.iter().map(|x| *x as f32 / 256.0 ).collect(),
+            false => test_data.iter().map(|x| *x as f32).collect()
+        };
+        let test_labels = test_labels.iter().map(|x| *x as f32).collect();
 
         Ok((train_data, train_labels, test_data, test_labels))
     }
 }
 
-fn get_data(config: &Cifar10, dataset: &str) -> Result<(Array4<u8>, Array2<u8>), Box<dyn Error>> {
+fn get_data(config: &Cifar10, dataset: &str) -> Result<(Vec<u8>, Vec<u8>), Box<dyn Error>> {
     let mut buffer: Vec<u8> = Vec::new();
 
     let (bin_paths, num_records) = match dataset {
@@ -313,52 +315,23 @@ fn get_data(config: &Cifar10, dataset: &str) -> Result<(Array4<u8>, Array2<u8>),
     }
     let data: Array4<u8> = Array::from_shape_vec((num_records, 3, 32, 32), data)?;
 
-    if config.show_images {
-        #[cfg(feature = "display")]
-        {
-            let mut rng = rand::thread_rng();
-            let num: usize = rng.gen_range(0..num_records);
-            // Displaying in minifb window instead of saving as a .png
-            let img_arr = data.slice(s!(num, .., .., ..));
-
-            println!(
-                "Data label: {}",
-                return_label_from_one_hot(labels.slice(s![num, ..]).to_owned())
-            );
-            display_img(&img_arr.to_owned())?;
-        }
-        #[cfg(not(feature = "display"))]
-        {
-            println!("WARNING: Displaying images disabled.");
-            println!("Please use the crate's 'display' feature to enable it.");
-        }
-    }
 
     Ok((data, labels))
 }
 
-fn return_label_from_one_hot(one_hot: Array1<u8>) -> String {
-    if one_hot == array![1, 0, 0, 0, 0, 0, 0, 0, 0, 0] {
-        "airplane".to_string()
-    } else if one_hot == array![0, 1, 0, 0, 0, 0, 0, 0, 0, 0] {
-        "automobile".to_string()
-    } else if one_hot == array![0, 0, 1, 0, 0, 0, 0, 0, 0, 0] {
-        "bird".to_string()
-    } else if one_hot == array![0, 0, 0, 1, 0, 0, 0, 0, 0, 0] {
-        "cat".to_string()
-    } else if one_hot == array![0, 0, 0, 0, 1, 0, 0, 0, 0, 0] {
-        "deer".to_string()
-    } else if one_hot == array![0, 0, 0, 0, 0, 1, 0, 0, 0, 0] {
-        "dog".to_string()
-    } else if one_hot == array![0, 0, 0, 0, 0, 0, 1, 0, 0, 0] {
-        "frog".to_string()
-    } else if one_hot == array![0, 0, 0, 0, 0, 0, 0, 1, 0, 0] {
-        "horse".to_string()
-    } else if one_hot == array![0, 0, 0, 0, 0, 0, 0, 0, 1, 0] {
-        "ship".to_string()
-    } else if one_hot == array![0, 0, 0, 0, 0, 0, 0, 0, 0, 1] {
-        "truck".to_string()
-    } else {
-        format!("Error: no valid label could be assigned to {}", one_hot)
+fn one_hot_from_u8_label(label: u8) -> Vec<u8> {
+    match label {
+        0 => vec![1, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+        1 => vec![0, 1, 0, 0, 0, 0, 0, 0, 0, 0],
+        2 => vec![0, 0, 1, 0, 0, 0, 0, 0, 0, 0],
+        3 => vec![0, 0, 0, 1, 0, 0, 0, 0, 0, 0],
+        4 => vec![0, 0, 0, 0, 1, 0, 0, 0, 0, 0],
+        5 => vec![0, 0, 0, 0, 0, 1, 0, 0, 0, 0],
+        6 => vec![0, 0, 0, 0, 0, 0, 1, 0, 0, 0],
+        7 => vec![0, 0, 0, 0, 0, 0, 0, 1, 0, 0],
+        8 => vec![0, 0, 0, 0, 0, 0, 0, 0, 1, 0],
+        9 => vec![0, 0, 0, 0, 0, 0, 0, 0, 0, 1],
+        _ => panic!("Unexpected input")
     }
 }
+
